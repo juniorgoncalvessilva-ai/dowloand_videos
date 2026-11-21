@@ -4,6 +4,12 @@ App local (Python) para baixar playlists/vídeos do YouTube e, se quiser, gerar 
 
 Os arquivos ficam em `downloads/`, nesta mesma pasta.
 
+## Regra de custo
+
+Tudo aqui é gratuito e roda no seu computador: yt-dlp, FFmpeg, faster-whisper, Vosk, youtube-transcript-api, SQLite e FastAPI. Nenhuma API paga, nenhuma chave.
+
+O único gasto aceito é o uso do Claude (a sua assinatura, pelo Claude Code), e no mínimo possível: o app prepara tudo localmente e só manda ao Claude o que precisa de julgamento, como escolher os melhores momentos. As decisões passam pelo método MVE (skill `mve-decisor`).
+
 ## Como abrir
 
 No PowerShell, nesta pasta:
