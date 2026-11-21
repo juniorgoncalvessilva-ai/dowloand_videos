@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import autorizacoes
 import core
 
 ROOT = Path(__file__).resolve().parent
@@ -33,11 +34,36 @@ class StartBody(BaseModel):
     subtitles: bool = False
     cookies_browser: str | None = None
     language: str = "pt"
+    creator_id: int | None = None
+    engine: str = "auto"
 
 
 class TranscribeBody(BaseModel):
     rels: list[str]
     language: str = "pt"
+    engine: str = "auto"
+
+
+class CriadorBody(BaseModel):
+    nome: str = Field(min_length=1)
+    canais: list[str] = Field(default_factory=list)
+    notas: str = ""
+
+
+class AutorizacaoBody(BaseModel):
+    tipo: str
+    prova: str = Field(min_length=1)
+    programa: str = ""
+    regras: str = ""
+    plataformas: list[str] = Field(default_factory=list)
+    pode_monetizar: bool = False
+    credito: str = ""
+    valido_de: str | None = None
+    valido_ate: str | None = None
+
+
+def _engine(value: str) -> str:
+    return value if value in core.MOTORES else "auto"
 
 
 def _langs(language: str) -> list[str]:
@@ -81,8 +107,12 @@ def start(body: StartBody) -> dict:
             subtitles=body.subtitles,
             cookies_browser=cookies,
             languages=_langs(body.language),
+            creator_id=body.creator_id,
+            engine=_engine(body.engine),
         )
         return job.snapshot()
+    except autorizacoes.AutorizacaoError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except core.UrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -92,10 +122,51 @@ def start(body: StartBody) -> dict:
 @app.post("/api/transcribe")
 def transcribe(body: TranscribeBody) -> dict:
     try:
-        job = core.transcribe_existing(body.rels, _langs(body.language))
+        job = core.transcribe_existing(body.rels, _langs(body.language), _engine(body.engine))
         return job.snapshot()
     except core.UrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/criadores")
+def criadores() -> dict:
+    return {
+        "items": autorizacoes.listar_criadores(),
+        "tipos": autorizacoes.TIPOS,
+        "plataformas": list(autorizacoes.PLATAFORMAS),
+    }
+
+
+@app.post("/api/criadores")
+def criar_criador(body: CriadorBody) -> dict:
+    try:
+        return autorizacoes.criar_criador(body.nome, body.canais, body.notas)
+    except autorizacoes.AutorizacaoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/criadores/{criador_id}")
+def obter_criador(criador_id: int) -> dict:
+    criador = autorizacoes.obter_criador(criador_id)
+    if not criador:
+        raise HTTPException(status_code=404, detail="Criador não encontrado.")
+    return criador
+
+
+@app.post("/api/criadores/{criador_id}/autorizacoes")
+def adicionar_autorizacao(criador_id: int, body: AutorizacaoBody) -> dict:
+    try:
+        return autorizacoes.adicionar_autorizacao(criador_id, **body.model_dump())
+    except autorizacoes.AutorizacaoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/autorizacoes/{autorizacao_id}/revogar")
+def revogar_autorizacao(autorizacao_id: int) -> dict:
+    try:
+        return autorizacoes.revogar_autorizacao(autorizacao_id)
+    except autorizacoes.AutorizacaoError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/jobs/{job_id}")

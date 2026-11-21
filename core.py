@@ -20,6 +20,9 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlretrieve
 
+import autorizacoes
+import transcricao
+
 ROOT = Path(__file__).resolve().parent
 DOWNLOADS = ROOT / "downloads"
 MODELS = ROOT / "models"
@@ -133,7 +136,6 @@ def which_tools() -> dict[str, Any]:
         "ffmpeg": bool(ffmpeg_path()),
         "whisper": whisper,
         "vosk": vosk,
-        "openai_key": False,
         "downloads": str(DOWNLOADS),
     }
 
@@ -181,8 +183,6 @@ def vosk_lang_key(language: str | None) -> str:
 
 
 def is_cookie_lock_error(exc: BaseException) -> bool:
-    text = str(exc).lower()
-    return "cookie database" in text or "cookiesfrombrowser" in text or "could not copy chrome" in text
     text = str(exc).lower()
     return "cookie database" in text or "cookiesfrombrowser" in text or "could not copy chrome" in text
 
@@ -440,46 +440,66 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _sidecar_transcript(video_path: Path) -> str | None:
-    for ext in (".pt.vtt", ".pt-BR.vtt", ".en.vtt", ".vtt", ".pt.srt", ".srt"):
-        candidate = video_path.with_suffix("")
-        # yt-dlp names: file.pt.vtt next to file.mp4
-        alt = Path(str(video_path.with_suffix("")) + ext)
+_LEGENDA_EXTS = (".pt.vtt", ".pt-BR.vtt", ".en.vtt", ".vtt", ".pt.srt", ".pt-BR.srt", ".en.srt", ".srt")
+
+
+def _sidecar_legenda(video_path: Path) -> Path | None:
+    """Acha a legenda baixada junto do vídeo (nunca a .transcricao.srt gerada por nós)."""
+    base = str(video_path.with_suffix(""))
+    for ext in _LEGENDA_EXTS:
+        alt = Path(base + ext)
         if alt.exists():
-            raw = alt.read_text(encoding="utf-8", errors="ignore")
-            return vtt_to_text(raw) if ext.endswith("vtt") else raw
-        if candidate.with_suffix(ext).exists():
-            raw = candidate.with_suffix(ext).read_text(encoding="utf-8", errors="ignore")
-            return vtt_to_text(raw) if ext.endswith("vtt") else raw
-    parent = video_path.parent
-    stem = video_path.stem
-    for path in parent.glob(f"{stem}*"):
-        if path.suffix.lower() in {".vtt", ".srt"}:
-            raw = path.read_text(encoding="utf-8", errors="ignore")
-            return vtt_to_text(raw) if path.suffix.lower() == ".vtt" else raw
+            return alt
+    for path in sorted(video_path.parent.glob(f"{glob_escape(video_path.stem)}*")):
+        if path.suffix.lower() in {".vtt", ".srt"} and ".transcricao." not in path.name:
+            return path
     return None
 
 
-def _youtube_transcript(video_id: str, languages: list[str]) -> str | None:
+def glob_escape(value: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", value)
+
+
+def _sidecar_transcript(video_path: Path) -> str | None:
+    """Texto corrido da legenda baixada (mantido por compatibilidade)."""
+    path = _sidecar_legenda(video_path)
+    if not path:
+        return None
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    return vtt_to_text(raw) if path.suffix.lower() == ".vtt" else raw
+
+
+def _segmentos_legenda(video_path: Path) -> list[transcricao.Segmento]:
+    path = _sidecar_legenda(video_path)
+    if not path:
+        return []
+    return transcricao.parse_legenda(path.read_text(encoding="utf-8", errors="ignore"))
+
+
+def _youtube_segmentos(video_id: str, languages: list[str]) -> list[transcricao.Segmento]:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except Exception:
-        return None
+        return []
     langs = languages + [lang.split("-")[0] for lang in languages]
     langs = list(dict.fromkeys(langs + ["pt", "pt-BR", "en"]))
     try:
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id, languages=langs)
-        parts = [item.text.strip() for item in fetched if getattr(item, "text", "").strip()]
-        return "\n".join(parts) if parts else None
+        fetched = YouTubeTranscriptApi().fetch(video_id, languages=langs)
+        segs = transcricao.segmentos_de_snippets(fetched)
+        if segs:
+            return segs
     except Exception:
         pass
     try:
         snippets = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
-        parts = [item["text"].strip() for item in snippets if item.get("text")]
-        return "\n".join(parts) if parts else None
+        return transcricao.segmentos_de_snippets(snippets)
     except Exception:
-        return None
+        return []
+
+
+def _youtube_transcript(video_id: str, languages: list[str]) -> str | None:
+    segs = _youtube_segmentos(video_id, languages)
+    return "\n".join(s.texto for s in segs) if segs else None
 
 
 def _extract_wav(video_path: Path) -> Path:
@@ -540,34 +560,29 @@ def _vosk_model(language: str | None):
     return model
 
 
-def _vosk_transcript(video_path: Path, language: str | None) -> str | None:
+def _vosk_segmentos(video_path: Path, language: str | None) -> list[transcricao.Segmento]:
     try:
         from vosk import KaldiRecognizer, SetLogLevel
     except Exception:
-        return None
+        return []
     SetLogLevel(-1)
     wav = _extract_wav(video_path)
     try:
         import wave
 
         model = _vosk_model(language)
+        resultados: list[dict[str, Any]] = []
         with wave.open(str(wav), "rb") as wf:
             rec = KaldiRecognizer(model, wf.getframerate())
-            rec.SetWords(False)
-            chunks: list[str] = []
+            rec.SetWords(True)
             while True:
                 data = wf.readframes(4000)
                 if not data:
                     break
                 if rec.AcceptWaveform(data):
-                    piece = json.loads(rec.Result()).get("text", "").strip()
-                    if piece:
-                        chunks.append(piece)
-            final = json.loads(rec.FinalResult()).get("text", "").strip()
-            if final:
-                chunks.append(final)
-        text = " ".join(chunks).strip()
-        return text or None
+                    resultados.append(json.loads(rec.Result()))
+            resultados.append(json.loads(rec.FinalResult()))
+        return transcricao.segmentos_de_vosk(resultados)
     finally:
         for attempt in range(5):
             try:
@@ -579,29 +594,69 @@ def _vosk_transcript(video_path: Path, language: str | None) -> str | None:
                 time.sleep(0.3)
 
 
+def _vosk_transcript(video_path: Path, language: str | None) -> str | None:
+    segs = _vosk_segmentos(video_path, language)
+    return " ".join(s.texto for s in segs) or None
+
+
+MOTORES = {
+    # auto: legenda já baixada → Whisper local → Vosk → legendas do YouTube
+    "auto": ("legenda", "whisper", "vosk", "youtube"),
+    # rapido: só legendas (baixada ou do YouTube), sem processar o áudio
+    "rapido": ("legenda", "youtube"),
+    # whisper: força o Whisper mesmo havendo legenda
+    "whisper": ("whisper",),
+}
+
+
+def video_id_do_nome(path: Path) -> str | None:
+    match = re.search(r"\[([A-Za-z0-9_-]{11})\]", path.name)
+    return match.group(1) if match else None
+
+
 def transcribe_file(
     video_path: Path,
     video_id: str | None,
     languages: list[str] | None = None,
+    engine: str = "auto",
+    progress: Callable[[float], None] | None = None,
 ) -> tuple[Path, str]:
+    """Transcreve com tempos. Gera .transcricao.json, .transcricao.srt e .txt.
+
+    Devolve (caminho do .txt, fonte usada).
+    """
     langs = languages or ["pt", "pt-BR", "en"]
     language = langs[0] if langs else "pt"
-    text = _sidecar_transcript(video_path)
-    source = "legenda"
-    if not text:
-        text = _vosk_transcript(video_path, language)
-        source = "vosk"
-    if not text and video_id:
-        text = _youtube_transcript(video_id, langs)
-        source = "youtube"
-    if not text:
-        raise RuntimeError(
-            "A transcrição local (Vosk) falhou. Confira o FFmpeg e o modelo em models/."
-        )
-    out = video_path.with_suffix(".txt")
-    header = f"# Transcrição ({source})\n# Arquivo: {video_path.name}\n\n"
-    _write_text(out, header + text + "\n")
-    return out, source
+    video_id = video_id or video_id_do_nome(video_path)
+    ordem = MOTORES.get(engine, MOTORES["auto"])
+    erros: list[str] = []
+    segmentos: list[transcricao.Segmento] = []
+    fonte = ""
+    for motor in ordem:
+        try:
+            if motor == "legenda":
+                segmentos = _segmentos_legenda(video_path)
+            elif motor == "whisper":
+                if not transcricao.whisper_disponivel():
+                    erros.append("whisper: faster-whisper não instalado")
+                    continue
+                segmentos = transcricao.transcrever_whisper(video_path, language, progress)
+            elif motor == "vosk":
+                segmentos = _vosk_segmentos(video_path, language)
+            elif motor == "youtube" and video_id:
+                segmentos = _youtube_segmentos(video_id, langs)
+        except Exception as exc:
+            erros.append(f"{motor}: {exc}")
+            segmentos = []
+        if segmentos:
+            fonte = motor
+            break
+    if not segmentos:
+        detalhe = "; ".join(erros) if erros else "nenhum motor devolveu texto"
+        raise RuntimeError(f"Não consegui transcrever ({detalhe}).")
+    saidas = transcricao.salvar(video_path, segmentos, fonte, language)
+    _atualizar_live_json(video_path, saidas, fonte)
+    return saidas["txt"], fonte
 
 
 @dataclass
@@ -653,9 +708,32 @@ class Job:
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 
+LIVES = DOWNLOADS / "lives"
+MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".m4a", ".mp3"}
+
 
 def get_job(job_id: str) -> Job | None:
     return JOBS.get(job_id)
+
+
+def _rel(path: Path) -> str:
+    return str(path.relative_to(DOWNLOADS)).replace("\\", "/")
+
+
+def _kind(path: Path) -> str | None:
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if name == "live.json" or name.endswith(".transcricao.json"):
+        return "dados"
+    if name.endswith(".transcricao.srt"):
+        return "transcript"
+    if suffix == ".txt":
+        return "transcript"
+    if suffix in {".vtt", ".srt"}:
+        return "subtitle"
+    if suffix in MEDIA_EXTS:
+        return "video"
+    return None
 
 
 def list_library() -> list[dict[str, Any]]:
@@ -664,7 +742,8 @@ def list_library() -> list[dict[str, Any]]:
     for path in sorted(DOWNLOADS.rglob("*")):
         if not path.is_file() or path.name == ".gitkeep":
             continue
-        if path.suffix.lower() not in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".txt", ".vtt", ".srt"}:
+        kind = _kind(path)
+        if not kind:
             continue
         rel = path.relative_to(DOWNLOADS)
         items.append(
@@ -672,11 +751,96 @@ def list_library() -> list[dict[str, Any]]:
                 "name": path.name,
                 "rel": str(rel).replace("\\", "/"),
                 "size": path.stat().st_size,
-                "kind": "transcript" if path.suffix.lower() == ".txt" else "subtitle" if path.suffix.lower() in {".vtt", ".srt"} else "video",
+                "kind": kind,
                 "folder": str(rel.parent).replace("\\", "/"),
             }
         )
     return items
+
+
+# --- metadados da live -----------------------------------------------------
+
+
+def _data_live(info: dict[str, Any]) -> str:
+    raw = str(info.get("release_date") or info.get("upload_date") or "")
+    if re.fullmatch(r"\d{8}", raw):
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    ts = info.get("release_timestamp") or info.get("timestamp")
+    if ts:
+        return time.strftime("%Y-%m-%d", time.localtime(int(ts)))
+    return time.strftime("%Y-%m-%d")
+
+
+def pasta_da_live(criador: dict[str, Any], info: dict[str, Any]) -> Path:
+    """lives/AAAA-MM-DD_<criador>_<titulo>/ (formato do plano de cortes)."""
+    nome = f"{_data_live(info)}_{safe_name(criador['nome'], 30)}_{safe_name(info.get('title') or 'live', 50)}"
+    return LIVES / nome
+
+
+def montar_live_json(
+    info: dict[str, Any],
+    criador: dict[str, Any],
+    autorizacao: dict[str, Any],
+    arquivo: Path | None,
+    pasta: Path,
+) -> dict[str, Any]:
+    return {
+        "versao": 1,
+        "video_id": info.get("id"),
+        "titulo": info.get("title"),
+        "url": info.get("webpage_url") or info.get("original_url"),
+        "plataforma": (info.get("extractor_key") or "Youtube").lower(),
+        "canal": info.get("channel") or info.get("uploader"),
+        "canal_id": info.get("channel_id"),
+        "canal_url": info.get("channel_url") or info.get("uploader_url"),
+        "data_live": _data_live(info),
+        "duracao_seg": info.get("duration"),
+        "foi_live": bool(info.get("was_live")) or info.get("live_status") in {"was_live", "post_live"},
+        "baixado_em": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "arquivo": str(arquivo.relative_to(pasta)).replace("\\", "/") if arquivo else None,
+        "criador": {"id": criador["id"], "nome": criador["nome"], "canais": criador.get("canais", [])},
+        "autorizacao": {
+            key: autorizacao.get(key)
+            for key in (
+                "id",
+                "tipo",
+                "programa",
+                "prova",
+                "regras",
+                "plataformas",
+                "pode_monetizar",
+                "credito",
+                "valido_de",
+                "valido_ate",
+            )
+        },
+        "transcricao": None,
+    }
+
+
+def _escrever_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _atualizar_live_json(media: Path, saidas: dict[str, Path], fonte: str) -> None:
+    """Se o vídeo está em lives/<live>/bruto/, registra a transcrição no live.json."""
+    if media.parent.name != "bruto":
+        return
+    live_json = media.parent.parent / "live.json"
+    if not live_json.exists():
+        return
+    data = json.loads(live_json.read_text(encoding="utf-8"))
+    pasta = live_json.parent
+    data["transcricao"] = {
+        "fonte": fonte,
+        "gerada_em": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **{k: str(v.relative_to(pasta)).replace("\\", "/") for k, v in saidas.items()},
+    }
+    _escrever_json(live_json, data)
+
+
+# --- jobs ------------------------------------------------------------------
 
 
 def start_job(
@@ -687,7 +851,14 @@ def start_job(
     cookies_browser: str | None,
     languages: list[str],
     subtitles: bool = False,
+    creator_id: int | None = None,
+    engine: str = "auto",
 ) -> Job:
+    criador = autorizacao = None
+    if creator_id is not None:
+        # Bloqueio do plano: sem autorização válida, a live não entra.
+        criador, autorizacao = autorizacoes.autorizacao_vigente(creator_id)
+
     inspected = inspect_url(url)
     selected = inspected["videos"]
     if video_ids:
@@ -696,8 +867,11 @@ def start_job(
     if not selected:
         raise UrlError("Nenhum vídeo selecionado.")
 
-    suffix = inspected.get("id") or "video"
-    folder = DOWNLOADS / f"{safe_name(inspected['title'], 50)} {suffix[-8:]}"
+    if criador:
+        folder = LIVES
+    else:
+        suffix = inspected.get("id") or "video"
+        folder = DOWNLOADS / f"{safe_name(inspected['title'], 50)} {suffix[-8:]}"
     folder.mkdir(parents=True, exist_ok=True)
     job = Job(
         id=uuid.uuid4().hex[:10],
@@ -719,6 +893,9 @@ def start_job(
             "cookies_browser": cookies_browser,
             "languages": languages,
             "folder": folder,
+            "criador": criador,
+            "autorizacao": autorizacao,
+            "engine": engine,
         },
         daemon=True,
     )
@@ -726,13 +903,13 @@ def start_job(
     return job
 
 
-def transcribe_existing(rels: list[str], languages: list[str]) -> Job:
+def transcribe_existing(rels: list[str], languages: list[str], engine: str = "auto") -> Job:
     paths = []
     for rel in rels:
         candidate = (DOWNLOADS / rel).resolve()
         if DOWNLOADS.resolve() not in candidate.parents and candidate != DOWNLOADS.resolve():
             raise UrlError("Caminho inválido.")
-        if candidate.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3"} and candidate.exists():
+        if candidate.suffix.lower() in MEDIA_EXTS and candidate.exists():
             paths.append(candidate)
     if not paths:
         raise UrlError("Nenhum vídeo para transcrever.")
@@ -747,11 +924,15 @@ def transcribe_existing(rels: list[str], languages: list[str]) -> Job:
         JOBS[job.id] = job
     thread = threading.Thread(
         target=_run_transcribe_only,
-        kwargs={"job": job, "paths": paths, "languages": languages},
+        kwargs={"job": job, "paths": paths, "languages": languages, "engine": engine},
         daemon=True,
     )
     thread.start()
     return job
+
+
+OUTTMPL_ARQUIVO = "%(playlist_index)03d - %(title).80B [%(id)s].%(ext)s"
+OUTTMPL_LIVE = "%(title).80B [%(id)s].%(ext)s"
 
 
 def _base_opts(
@@ -762,6 +943,7 @@ def _base_opts(
     cookies_browser: str | None = None,
     subtitles: bool = False,
     languages: list[str] | None = None,
+    outtmpl: str = OUTTMPL_ARQUIVO,
 ) -> dict[str, Any]:
     ffmpeg = ffmpeg_path()
     has_ffmpeg = bool(ffmpeg)
@@ -770,7 +952,7 @@ def _base_opts(
         "no_warnings": True,
         "ignoreerrors": False,
         "noprogress": True,
-        "outtmpl": str(folder / "%(playlist_index)03d - %(title).80B.%(ext)s"),
+        "outtmpl": str(folder / outtmpl),
         "restrictfilenames": False,
         "windowsfilenames": True,
         "format": format_selector(quality, has_ffmpeg),
@@ -804,6 +986,16 @@ def _ydl_download(opts: dict[str, Any], target: str) -> None:
         ydl.download([target])
 
 
+def _ydl_info(opts: dict[str, Any], target: str) -> dict[str, Any]:
+    info_opts = {k: v for k, v in opts.items() if k not in {"progress_hooks"}}
+    info_opts["skip_download"] = True
+    with _ydl().YoutubeDL(info_opts) as ydl:
+        info = ydl.extract_info(target, download=False)
+    if not info:
+        raise RuntimeError("O YouTube não devolveu dados do vídeo.")
+    return ydl.sanitize_info(info) if hasattr(ydl, "sanitize_info") else info
+
+
 def _progress_hook(job: Job, data: dict[str, Any]) -> None:
     status = data.get("status")
     if status == "downloading":
@@ -820,6 +1012,27 @@ def _progress_hook(job: Job, data: dict[str, Any]) -> None:
         job.emit()
 
 
+def _skip(job: Job, erro: str) -> None:
+    job.errors.append(erro)
+    job.done += 1
+    job.percent = (job.done / job.total) * 100
+    job.emit()
+
+
+def _transcribe_progress(job: Job, titulo: str) -> Callable[[float], None]:
+    ultimo = {"t": 0.0}
+
+    def _cb(frac: float) -> None:
+        agora = time.time()
+        if agora - ultimo["t"] < 2:
+            return
+        ultimo["t"] = agora
+        job.message = f"Transcrevendo {titulo} ({frac * 100:.0f}%)"
+        job.emit()
+
+    return _cb
+
+
 def _run_job(
     job: Job,
     videos: list[dict[str, Any]],
@@ -829,6 +1042,9 @@ def _run_job(
     languages: list[str],
     folder: Path,
     subtitles: bool = False,
+    criador: dict[str, Any] | None = None,
+    autorizacao: dict[str, Any] | None = None,
+    engine: str = "auto",
 ) -> None:
     job.status = "running"
     job.emit()
@@ -845,24 +1061,50 @@ def _run_job(
             job.errors.append(
                 f"Cookies do {cookies_browser}: {exc}. Seguindo sem login."
             )
+    outtmpl = OUTTMPL_LIVE if criador else OUTTMPL_ARQUIVO
     try:
         for video in videos:
             if job._stop.is_set():
                 break
             job.current = video["title"]
+            target = video.get("url") or f"https://www.youtube.com/watch?v={video['id']}"
+            dest = folder
+            info: dict[str, Any] | None = None
+            live_dir: Path | None = None
+            if criador:
+                job.message = f"Conferindo canal de {video['title']}"
+                job.emit()
+                try:
+                    info = _ydl_info(
+                        _base_opts(folder, quality, job, cookiefile=cookiefile, cookies_browser=live_browser),
+                        target,
+                    )
+                except Exception as exc:
+                    _skip(job, f"{video['title']}: não consegui ler os dados ({exc})")
+                    continue
+                if not autorizacoes.canal_confere(criador, info):
+                    canal = info.get("channel") or info.get("uploader") or "desconhecido"
+                    _skip(
+                        job,
+                        f"{video['title']}: bloqueado. O canal \"{canal}\" não está cadastrado para {criador['nome']}.",
+                    )
+                    continue
+                live_dir = pasta_da_live(criador, info)
+                dest = live_dir / "bruto"
+                dest.mkdir(parents=True, exist_ok=True)
             job.message = f"Baixando {video['title']}"
             job.emit()
             opts = _base_opts(
-                folder,
+                dest,
                 quality,
                 job,
                 cookiefile=cookiefile,
                 cookies_browser=live_browser,
                 subtitles=subtitles,
                 languages=languages,
+                outtmpl=outtmpl,
             )
-            target = video.get("url") or f"https://www.youtube.com/watch?v={video['id']}"
-            before = {p.resolve() for p in folder.glob("*") if p.is_file()}
+            before = {p.resolve() for p in dest.glob("*") if p.is_file()}
             try:
                 _ydl_download(opts, target)
             except Exception as exc:
@@ -871,34 +1113,38 @@ def _run_job(
                     job.emit()
                     time.sleep(2)
                     try:
-                        _ydl_download(_base_opts(folder, quality, job), target)
+                        _ydl_download(_base_opts(dest, quality, job, outtmpl=outtmpl), target)
                     except Exception as exc2:
-                        job.errors.append(f"{video['title']}: {exc2}")
-                        job.done += 1
-                        job.percent = (job.done / job.total) * 100
-                        job.emit()
+                        _skip(job, f"{video['title']}: {exc2}")
                         continue
                 else:
-                    job.errors.append(f"{video['title']}: {exc}")
-                    job.done += 1
-                    job.percent = (job.done / job.total) * 100
-                    job.emit()
+                    _skip(job, f"{video['title']}: {exc}")
                     continue
-            after = [p for p in folder.glob("*") if p.is_file() and p.resolve() not in before]
-            media = [
-                p
-                for p in after
-                if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3"}
-            ]
+            after = [p for p in dest.glob("*") if p.is_file() and p.resolve() not in before]
+            media = [p for p in after if p.suffix.lower() in MEDIA_EXTS]
+            if not media:
+                # Arquivo já existia (overwrites=False): usa o que tem o ID no nome.
+                media = [p for p in dest.glob(f"*[[]{video['id']}[]]*") if p.suffix.lower() in MEDIA_EXTS]
             media.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             saved = media[0] if media else None
+            if live_dir and info is not None and criador and autorizacao:
+                _escrever_json(
+                    live_dir / "live.json",
+                    montar_live_json(info, criador, autorizacao, saved, live_dir),
+                )
             transcript_rel = None
             if saved and transcribe:
                 job.message = f"Transcrevendo {video['title']}"
                 job.emit()
                 try:
-                    txt, source = transcribe_file(saved, video.get("id"), languages)
-                    transcript_rel = str(txt.relative_to(DOWNLOADS)).replace("\\", "/")
+                    txt, source = transcribe_file(
+                        saved,
+                        video.get("id"),
+                        languages,
+                        engine=engine,
+                        progress=_transcribe_progress(job, video["title"]),
+                    )
+                    transcript_rel = _rel(txt)
                     job.message = f"Transcrição ({source}): {txt.name}"
                 except Exception as exc:
                     job.errors.append(f"Transcrição {video['title']}: {exc}")
@@ -906,16 +1152,17 @@ def _run_job(
                 job.files.append(
                     {
                         "name": saved.name,
-                        "rel": str(saved.relative_to(DOWNLOADS)).replace("\\", "/"),
+                        "rel": _rel(saved),
                         "transcript": transcript_rel,
+                        "live": _rel(live_dir / "live.json") if live_dir else None,
                     }
                 )
             job.done += 1
             job.percent = (job.done / job.total) * 100
             job.emit()
             time.sleep(1)
-        job.status = "error" if job.errors and job.done == len(job.errors) else "done"
-        job.message = "Concluído" if job.status == "done" else "Concluído com erros"
+        job.status = "error" if job.errors and not job.files else "done"
+        job.message = "Concluído" if not job.errors else "Concluído com erros"
         job.current = ""
         job.percent = 100
         job.emit({"done": True})
@@ -926,7 +1173,7 @@ def _run_job(
         job.emit({"done": True})
 
 
-def _run_transcribe_only(job: Job, paths: list[Path], languages: list[str]) -> None:
+def _run_transcribe_only(job: Job, paths: list[Path], languages: list[str], engine: str = "auto") -> None:
     job.status = "running"
     job.emit()
     try:
@@ -934,17 +1181,19 @@ def _run_transcribe_only(job: Job, paths: list[Path], languages: list[str]) -> N
             job.current = path.name
             job.message = f"Transcrevendo {path.name}"
             job.emit()
-            video_id = None
-            match = re.search(r"\[([A-Za-z0-9_-]{11})\]", path.name)
-            if match:
-                video_id = match.group(1)
             try:
-                txt, source = transcribe_file(path, video_id, languages)
+                txt, source = transcribe_file(
+                    path,
+                    video_id_do_nome(path),
+                    languages,
+                    engine=engine,
+                    progress=_transcribe_progress(job, path.name),
+                )
                 job.files.append(
                     {
                         "name": txt.name,
-                        "rel": str(txt.relative_to(DOWNLOADS)).replace("\\", "/"),
-                        "transcript": str(txt.relative_to(DOWNLOADS)).replace("\\", "/"),
+                        "rel": _rel(txt),
+                        "transcript": _rel(txt),
                         "source": source,
                     }
                 )

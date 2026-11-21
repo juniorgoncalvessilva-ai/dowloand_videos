@@ -13,3 +13,4 @@ downloads/**
 models/*.zip
 
 models/vosk-model-*/
+data/
