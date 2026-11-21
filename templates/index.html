@@ -52,7 +52,7 @@
       color: var(--muted);
       margin-bottom: 8px;
     }
-    input[type="url"], select {
+    input[type="url"], input[type="text"], input[type="date"], textarea, select {
       width: 100%;
       background: #14110d;
       color: var(--ink);
@@ -110,6 +110,18 @@
     th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
     th { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); font-weight: 500; }
     .empty { color: var(--muted); padding: 18px 0; }
+    .creators { margin-top: 18px; }
+    .creators .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 12px; }
+    @media (max-width: 900px) { .creators .cols { grid-template-columns: 1fr; } }
+    .creators form { display: grid; gap: 10px; }
+    .creators h3 { font-weight: 500; margin: 0 0 4px; font-size: 18px; }
+    textarea { min-height: 64px; resize: vertical; }
+    .pill { font-family: "IBM Plex Mono", monospace; font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); }
+    .pill.ok { color: var(--ok); border-color: var(--ok); }
+    .pill.no { color: var(--red); border-color: var(--red); }
+    .aut { font-size: 14px; color: var(--muted); margin: 4px 0 0 0; }
+    .aut button { font-size: 10px; padding: 3px 8px; }
+    .creator { padding: 10px 0; border-bottom: 1px solid var(--line); }
   </style>
 </head>
 <body>
@@ -117,8 +129,8 @@
     <header>
       <div>
         <div class="brand">Arquivo local</div>
-        <h1>Baixar a série e guardar o texto.</h1>
-        <p class="lede">Cole o link de um vídeo ou de uma playlist. Os arquivos ficam nesta pasta, prontos para assistir ou transcrever.</p>
+        <h1>Baixar, transcrever e preparar os cortes.</h1>
+        <p class="lede">Lives para cortes só entram de criadores com autorização válida. A transcrição sai com tempos por fala.</p>
       </div>
       <div class="health" id="health">checando ferramentas…</div>
     </header>
@@ -132,6 +144,12 @@
           <button class="chip" type="button" data-url="https://www.youtube.com/watch?v=FnUFFwAlFHI&list=PLU_SHzaZfpz_9bRJ7G6bRjRho_MFzTJnX">Lista 2</button>
         </div>
         <div class="opts">
+          <div style="grid-column: 1 / -1">
+            <label class="field-label" for="creator">Destino</label>
+            <select id="creator">
+              <option value="">Arquivo pessoal (sem criador, fora do pipeline de cortes)</option>
+            </select>
+          </div>
           <div>
             <label class="field-label" for="quality">Qualidade</label>
             <select id="quality">
@@ -147,6 +165,14 @@
               <option value="pt">Português</option>
               <option value="en">Inglês</option>
               <option value="auto">Automático</option>
+            </select>
+          </div>
+          <div style="grid-column: 1 / -1">
+            <label class="field-label" for="engine">Motor da transcrição</label>
+            <select id="engine">
+              <option value="auto" selected>Automático: legenda baixada, depois Whisper, Vosk e legendas do YouTube</option>
+              <option value="rapido">Rápido: só legendas (baixada ou do YouTube)</option>
+              <option value="whisper">Whisper: melhor qualidade, mais lento</option>
             </select>
           </div>
         </div>
@@ -176,6 +202,42 @@
         <div class="files" id="files"></div>
       </section>
     </div>
+
+    <section class="card creators">
+      <label class="field-label">Criadores e autorizações</label>
+      <strong>Só baixamos lives para cortes de quem autorizou</strong>
+      <div class="cols">
+        <div>
+          <div id="creatorList"><p class="empty">Nenhum criador cadastrado.</p></div>
+        </div>
+        <div>
+          <form id="creatorForm">
+            <h3>Novo criador</h3>
+            <input type="text" id="cNome" placeholder="Nome do criador ou podcast" required />
+            <textarea id="cCanais" placeholder="Canais, um por linha (ex.: https://www.youtube.com/@canal). Se preencher, só lives desses canais passam."></textarea>
+            <input type="text" id="cNotas" placeholder="Notas (opcional)" />
+            <button class="ghost" type="submit">Cadastrar criador</button>
+          </form>
+          <form id="autForm" style="margin-top:18px">
+            <h3>Nova autorização</h3>
+            <select id="aCriador" required></select>
+            <select id="aTipo"></select>
+            <input type="text" id="aPrograma" placeholder="Nome do programa ou contrato (ex.: Programa de cortes do canal X)" />
+            <input type="text" id="aProva" placeholder="Prova: link do programa, contrato ou print" required />
+            <textarea id="aRegras" placeholder="Regras do programa (tamanho, marcações obrigatórias, o que não pode)"></textarea>
+            <input type="text" id="aCredito" placeholder="Crédito obrigatório (ex.: Corte do @canal, live completa no link)" />
+            <div class="row" id="aPlats" style="margin-top:0"></div>
+            <label class="check"><input type="checkbox" id="aMonet" /> Pode monetizar o próprio canal de cortes</label>
+            <div class="opts" style="margin-top:0">
+              <div><label class="field-label" for="aDe">Válido de</label><input type="date" id="aDe" /></div>
+              <div><label class="field-label" for="aAte">Válido até</label><input type="date" id="aAte" /></div>
+            </div>
+            <button class="primary" type="submit">Salvar autorização</button>
+          </form>
+          <p class="log" id="creatorMsg"></p>
+        </div>
+      </div>
+    </section>
 
     <section class="card library">
       <div class="row" style="justify-content:space-between">
@@ -213,6 +275,7 @@
         $("health").innerHTML =
           `<div><span class="dot ${h.ffmpeg ? "ok" : ""}"></span>ffmpeg ${h.ffmpeg ? "ok" : "ausente"}</div>` +
           `<div><span class="dot ok"></span>pasta: downloads/</div>` +
+          `<div><span class="dot ${h.whisper ? "ok" : ""}"></span>whisper ${h.whisper ? "local" : "ausente"}</div>` +
           `<div><span class="dot ${h.vosk ? "ok" : ""}"></span>vosk ${h.vosk ? "local" : "ausente"}</div>`;
       } catch (err) {
         $("health").textContent = err.message;
@@ -269,7 +332,7 @@
         $("bar").style.width = `${job.percent || 0}%`;
         $("jobMsg").textContent = job.message || "";
         $("files").innerHTML = (job.files || []).map((f) =>
-          `<div><a href="/download?rel=${encodeURIComponent(f.rel)}" target="_blank">${f.name}</a>${f.transcript ? ` · <a href="/download?rel=${encodeURIComponent(f.transcript)}" target="_blank">txt</a>` : ""}</div>`
+          `<div><a href="/download?rel=${encodeURIComponent(f.rel)}" target="_blank">${f.name}</a>${f.transcript ? ` · <a href="/download?rel=${encodeURIComponent(f.transcript)}" target="_blank">txt</a>` : ""}${f.live ? ` · <a href="/download?rel=${encodeURIComponent(f.live)}" target="_blank">live.json</a>` : ""}</div>`
         ).join("");
         if (job.errors && job.errors.length) {
           $("jobMsg").innerHTML = `${job.message}<br><span class="err">${job.errors.slice(-2).join("<br>")}</span>`;
@@ -294,7 +357,9 @@
             transcribe: $("transcribe").checked,
             subtitles: $("subtitles").checked,
             cookies_browser: $("cookies").checked ? "chrome" : null,
-            language: $("lang").value
+            language: $("lang").value,
+            creator_id: $("creator").value ? Number($("creator").value) : null,
+            engine: $("engine").value
           })
         });
         listenJob(job.id);
@@ -321,7 +386,7 @@
                 <td>${i.kind === "video" ? `<input type="checkbox" class="lib" data-rel="${i.rel}" />` : ""}</td>
                 <td><a href="/download?rel=${encodeURIComponent(i.rel)}" target="_blank">${i.name}</a></td>
                 <td>${i.folder}</td>
-                <td>${i.kind === "transcript" ? "texto" : i.kind === "subtitle" ? "legenda" : "vídeo"}</td>
+                <td>${({ transcript: "transcrição", subtitle: "legenda", dados: "dados", video: "vídeo" })[i.kind] || i.kind}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -356,13 +421,100 @@
       }
       const job = await api("/api/transcribe", {
         method: "POST",
-        body: JSON.stringify({ rels, language: $("lang").value })
+        body: JSON.stringify({ rels, language: $("lang").value, engine: $("engine").value })
       });
       listenJob(job.id);
     });
 
+    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+    async function loadCreators() {
+      const data = await api("/api/criadores");
+      const items = data.items || [];
+      const current = $("creator").value;
+      $("creator").innerHTML = `<option value="">Arquivo pessoal (sem criador, fora do pipeline de cortes)</option>` +
+        items.map((c) => `<option value="${c.id}" ${c.autorizado ? "" : "disabled"}>${esc(c.nome)}${c.autorizado ? "" : " (sem autorização válida)"}</option>`).join("");
+      if ([...$("creator").options].some((o) => o.value === current && !o.disabled)) $("creator").value = current;
+      $("aCriador").innerHTML = items.length
+        ? items.map((c) => `<option value="${c.id}">${esc(c.nome)}</option>`).join("")
+        : `<option value="">Cadastre um criador primeiro</option>`;
+      if (!$("aTipo").options.length) {
+        $("aTipo").innerHTML = Object.entries(data.tipos).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+        $("aPlats").innerHTML = data.plataformas.map((p) => `<label class="check"><input type="checkbox" class="aPlat" value="${p}" /> ${p}</label>`).join("");
+      }
+      if (!items.length) {
+        $("creatorList").innerHTML = `<p class="empty">Nenhum criador cadastrado.</p>`;
+        return;
+      }
+      $("creatorList").innerHTML = items.map((c) => `
+        <div class="creator">
+          <strong>${esc(c.nome)}</strong>
+          <span class="pill ${c.autorizado ? "ok" : "no"}">${c.autorizado ? "autorizado" : "sem autorização"}</span>
+          ${c.canais.length ? `<div class="aut">Canais: ${c.canais.map(esc).join(", ")}</div>` : `<div class="aut">Sem canal cadastrado (não confere o canal da live)</div>`}
+          ${c.autorizacoes.map((a) => `
+            <div class="aut">
+              <span class="pill ${a.valida ? "ok" : "no"}">${a.revogada_em ? "revogada" : a.valida ? "válida" : "fora da validade"}</span>
+              ${esc(a.tipo_nome)}${a.programa ? `: ${esc(a.programa)}` : ""}
+              ${a.valido_ate ? ` · até ${esc(a.valido_ate)}` : ""}
+              ${a.plataformas.length ? ` · ${a.plataformas.map(esc).join(", ")}` : ""}
+              ${a.pode_monetizar ? " · pode monetizar" : ""}
+              ${a.revogada_em ? "" : ` <button class="ghost" type="button" data-revoke="${a.id}">Revogar</button>`}
+            </div>`).join("")}
+        </div>`).join("");
+      document.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+        await api(`/api/autorizacoes/${b.dataset.revoke}/revogar`, { method: "POST" });
+        loadCreators();
+      }));
+    }
+
+    $("creatorForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      try {
+        await api("/api/criadores", {
+          method: "POST",
+          body: JSON.stringify({
+            nome: $("cNome").value.trim(),
+            canais: $("cCanais").value.split(/\n|,/).map((x) => x.trim()).filter(Boolean),
+            notas: $("cNotas").value.trim()
+          })
+        });
+        $("creatorForm").reset();
+        $("creatorMsg").textContent = "Criador cadastrado. Agora registre a autorização.";
+        loadCreators();
+      } catch (err) {
+        $("creatorMsg").innerHTML = `<span class="err">${esc(err.message)}</span>`;
+      }
+    });
+
+    $("autForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (!$("aCriador").value) return;
+      try {
+        await api(`/api/criadores/${$("aCriador").value}/autorizacoes`, {
+          method: "POST",
+          body: JSON.stringify({
+            tipo: $("aTipo").value,
+            prova: $("aProva").value.trim(),
+            programa: $("aPrograma").value.trim(),
+            regras: $("aRegras").value.trim(),
+            credito: $("aCredito").value.trim(),
+            plataformas: [...document.querySelectorAll(".aPlat:checked")].map((el) => el.value),
+            pode_monetizar: $("aMonet").checked,
+            valido_de: $("aDe").value || null,
+            valido_ate: $("aAte").value || null
+          })
+        });
+        $("autForm").reset();
+        $("creatorMsg").textContent = "Autorização salva.";
+        loadCreators();
+      } catch (err) {
+        $("creatorMsg").innerHTML = `<span class="err">${esc(err.message)}</span>`;
+      }
+    });
+
     loadHealth();
     loadLibrary();
+    loadCreators();
   </script>
 </body>
 </html>
