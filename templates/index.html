@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Arquivo · playlists do YouTube</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #ece6d6;
+      --muted: #9a927e;
+      --paper: #16140f;
+      --panel: #201c16;
+      --line: rgba(236, 230, 214, 0.12);
+      --amber: #e2a33a;
+      --red: #d45a3c;
+      --ok: #7db38a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
+    body {
+      font-family: Newsreader, Georgia, serif;
+      background-image:
+        radial-gradient(1200px 500px at 10% -10%, #2a2418 0%, transparent 50%),
+        linear-gradient(180deg, #12100c, #16140f);
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 80px; }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; margin-bottom: 28px; }
+    .brand { font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--amber); }
+    h1 { font-size: 42px; font-weight: 500; margin: 8px 0 0; letter-spacing: -0.03em; }
+    .lede { color: var(--muted); max-width: 42ch; margin: 8px 0 0; }
+    .health { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); text-align: right; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; margin-right: 6px; background: var(--red); }
+    .dot.ok { background: var(--ok); }
+    .grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 18px; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } h1 { font-size: 32px; } }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.25);
+    }
+    label.field, .field-label {
+      display: block;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    input[type="url"], select {
+      width: 100%;
+      background: #14110d;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 12px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 13px;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; }
+    .chip {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 11px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--ink);
+      padding: 7px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .chip:hover { border-color: var(--amber); color: var(--amber); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .check { display: flex; gap: 8px; align-items: center; font-size: 15px; color: var(--ink); }
+    button.primary, button.ghost {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 16px;
+      cursor: pointer;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    button.primary { background: var(--amber); color: #1a1408; }
+    button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .list { max-height: 420px; overflow: auto; margin-top: 8px; }
+    .item {
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 10px;
+      align-items: start;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .item small { color: var(--muted); font-family: "IBM Plex Mono", monospace; }
+    .bar { height: 8px; background: #14110d; border-radius: 99px; overflow: hidden; margin: 12px 0; }
+    .bar > span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #c4842a, var(--amber)); }
+    .log { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); min-height: 2.4em; }
+    .err { color: var(--red); }
+    .files a { color: var(--amber); }
+    .library { margin-top: 18px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    th { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--muted); font-weight: 500; }
+    .empty { color: var(--muted); padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="brand">Arquivo local</div>
+        <h1>Baixar a série e guardar o texto.</h1>
+        <p class="lede">Cole o link de um vídeo ou de uma playlist. Os arquivos ficam nesta pasta, prontos para assistir ou transcrever.</p>
+      </div>
+      <div class="health" id="health">checando ferramentas…</div>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <label class="field-label" for="url">Link do YouTube</label>
+        <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…&list=…" />
+        <div class="chips">
+          <button class="chip" type="button" data-url="https://www.youtube.com/watch?v=6D9TZyQxrC0&list=PLDLUTtB_bQle_E4j08aTGlbMW1EKMKAbE&index=1">Lista 1</button>
+          <button class="chip" type="button" data-url="https://www.youtube.com/watch?v=FnUFFwAlFHI&list=PLU_SHzaZfpz_9bRJ7G6bRjRho_MFzTJnX">Lista 2</button>
+        </div>
+        <div class="opts">
+          <div>
+            <label class="field-label" for="quality">Qualidade</label>
+            <select id="quality">
+              <option value="best" selected>Melhor disponível (padrão)</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="audio">Só áudio</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="lang">Idioma da transcrição</label>
+            <select id="lang">
+              <option value="pt">Português</option>
+              <option value="en">Inglês</option>
+              <option value="auto">Automático</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <label class="check"><input id="transcribe" type="checkbox" checked /> Transcrever depois de baixar</label>
+          <label class="check"><input id="subtitles" type="checkbox" /> Baixar legendas (.vtt)</label>
+          <label class="check"><input id="cookies" type="checkbox" /> Usar login do Chrome (pode ficar aberto)</label>
+        </div>
+        <div class="row">
+          <button class="primary" id="inspectBtn" type="button">Carregar lista</button>
+          <button class="ghost" id="downloadBtn" type="button" disabled>Baixar selecionados</button>
+        </div>
+        <p class="log" id="formMsg"></p>
+      </section>
+
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div>
+            <label class="field-label">Fila</label>
+            <strong id="plistTitle">Nenhuma lista carregada</strong>
+          </div>
+          <button class="ghost" id="allBtn" type="button">Todos</button>
+        </div>
+        <div class="list" id="list"><p class="empty">Cole um link e carregue a playlist.</p></div>
+        <div class="bar"><span id="bar"></span></div>
+        <p class="log" id="jobMsg">Aguardando.</p>
+        <div class="files" id="files"></div>
+      </section>
+    </div>
+
+    <section class="card library">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <label class="field-label">Já baixado</label>
+          <strong>Pasta downloads/</strong>
+        </div>
+        <div class="row">
+          <button class="ghost" id="refreshBtn" type="button">Atualizar</button>
+          <button class="ghost" id="allLibBtn" type="button">Selecionar todos</button>
+          <button class="primary" id="transcribeLibBtn" type="button">Transcrever selecionados</button>
+        </div>
+      </div>
+      <div id="library"></div>
+    </section>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { videos: [], url: "", job: null };
+
+    document.querySelectorAll(".chip").forEach((btn) => {
+      btn.addEventListener("click", () => { $("url").value = btn.dataset.url; });
+    });
+
+    async function api(path, opts) {
+      const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Falha na requisição");
+      return data;
+    }
+
+    async function loadHealth() {
+      try {
+        const h = await api("/api/health");
+        $("health").innerHTML =
+          `<div><span class="dot ${h.ffmpeg ? "ok" : ""}"></span>ffmpeg ${h.ffmpeg ? "ok" : "ausente"}</div>` +
+          `<div><span class="dot ok"></span>pasta: downloads/</div>` +
+          `<div><span class="dot ${h.vosk ? "ok" : ""}"></span>vosk ${h.vosk ? "local" : "ausente"}</div>`;
+      } catch (err) {
+        $("health").textContent = err.message;
+      }
+    }
+
+    function fmtDur(sec) {
+      if (!sec && sec !== 0) return "";
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function renderList() {
+      if (!state.videos.length) return;
+      $("list").innerHTML = state.videos.map((v, i) => `
+        <label class="item">
+          <input type="checkbox" class="vid" data-id="${v.id}" checked />
+          <span>${i + 1}. ${v.title}<br><small>${fmtDur(v.duration)}</small></span>
+        </label>
+      `).join("");
+    }
+
+    $("allBtn").addEventListener("click", () => {
+      document.querySelectorAll(".vid").forEach((c) => { c.checked = true; });
+    });
+
+    $("inspectBtn").addEventListener("click", async () => {
+      $("formMsg").textContent = "Lendo a playlist…";
+      $("inspectBtn").disabled = true;
+      try {
+        state.url = $("url").value.trim();
+        const data = await api("/api/inspect", { method: "POST", body: JSON.stringify({ url: state.url }) });
+        state.videos = data.videos || [];
+        $("plistTitle").textContent = `${data.title} · ${data.count} vídeos`;
+        renderList();
+        $("downloadBtn").disabled = !state.videos.length;
+        $("formMsg").textContent = "Lista pronta. Marque o que quiser baixar.";
+      } catch (err) {
+        $("formMsg").innerHTML = `<span class="err">${err.message}</span>`;
+      } finally {
+        $("inspectBtn").disabled = false;
+      }
+    });
+
+    function selectedIds() {
+      return [...document.querySelectorAll(".vid:checked")].map((el) => el.dataset.id);
+    }
+
+    function listenJob(id) {
+      const src = new EventSource(`/api/jobs/${id}/stream`);
+      src.onmessage = (ev) => {
+        const job = JSON.parse(ev.data);
+        $("bar").style.width = `${job.percent || 0}%`;
+        $("jobMsg").textContent = job.message || "";
+        $("files").innerHTML = (job.files || []).map((f) =>
+          `<div><a href="/download?rel=${encodeURIComponent(f.rel)}" target="_blank">${f.name}</a>${f.transcript ? ` · <a href="/download?rel=${encodeURIComponent(f.transcript)}" target="_blank">txt</a>` : ""}</div>`
+        ).join("");
+        if (job.errors && job.errors.length) {
+          $("jobMsg").innerHTML = `${job.message}<br><span class="err">${job.errors.slice(-2).join("<br>")}</span>`;
+        }
+        if (job.finished) {
+          src.close();
+          loadLibrary();
+        }
+      };
+    }
+
+    $("downloadBtn").addEventListener("click", async () => {
+      $("downloadBtn").disabled = true;
+      $("jobMsg").textContent = "Iniciando…";
+      try {
+        const job = await api("/api/start", {
+          method: "POST",
+          body: JSON.stringify({
+            url: state.url || $("url").value.trim(),
+            video_ids: selectedIds(),
+            quality: $("quality").value,
+            transcribe: $("transcribe").checked,
+            subtitles: $("subtitles").checked,
+            cookies_browser: $("cookies").checked ? "chrome" : null,
+            language: $("lang").value
+          })
+        });
+        listenJob(job.id);
+      } catch (err) {
+        $("jobMsg").innerHTML = `<span class="err">${err.message}</span>`;
+      } finally {
+        $("downloadBtn").disabled = false;
+      }
+    });
+
+    async function loadLibrary() {
+      const data = await api("/api/library");
+      const videos = data.items.filter((i) => i.kind === "video");
+      if (!videos.length) {
+        $("library").innerHTML = `<p class="empty">Ainda não há arquivos em downloads/.</p>`;
+        return;
+      }
+      $("library").innerHTML = `
+        <table>
+          <thead><tr><th><input type="checkbox" id="libAll" title="Selecionar todos" /></th><th>Arquivo</th><th>Pasta</th><th>Tipo</th></tr></thead>
+          <tbody>
+            ${data.items.map((i) => `
+              <tr>
+                <td>${i.kind === "video" ? `<input type="checkbox" class="lib" data-rel="${i.rel}" />` : ""}</td>
+                <td><a href="/download?rel=${encodeURIComponent(i.rel)}" target="_blank">${i.name}</a></td>
+                <td>${i.folder}</td>
+                <td>${i.kind === "transcript" ? "texto" : i.kind === "subtitle" ? "legenda" : "vídeo"}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`;
+      const master = $("libAll");
+      if (master) {
+        master.addEventListener("change", () => {
+          document.querySelectorAll(".lib").forEach((c) => { c.checked = master.checked; });
+        });
+      }
+      document.querySelectorAll(".lib").forEach((c) => {
+        c.addEventListener("change", () => {
+          const boxes = [...document.querySelectorAll(".lib")];
+          if (master) master.checked = boxes.length > 0 && boxes.every((el) => el.checked);
+        });
+      });
+    }
+
+    $("refreshBtn").addEventListener("click", loadLibrary);
+    $("allLibBtn").addEventListener("click", () => {
+      const boxes = [...document.querySelectorAll(".lib")];
+      const allOn = boxes.length > 0 && boxes.every((c) => c.checked);
+      boxes.forEach((c) => { c.checked = !allOn; });
+      const master = $("libAll");
+      if (master) master.checked = !allOn;
+    });
+    $("transcribeLibBtn").addEventListener("click", async () => {
+      const rels = [...document.querySelectorAll(".lib:checked")].map((el) => el.dataset.rel);
+      if (!rels.length) {
+        $("jobMsg").textContent = "Selecione vídeos já baixados para transcrever.";
+        return;
+      }
+      const job = await api("/api/transcribe", {
+        method: "POST",
+        body: JSON.stringify({ rels, language: $("lang").value })
+      });
+      listenJob(job.id);
+    });
+
+    loadHealth();
+    loadLibrary();
+  </script>
+</body>
+</html>

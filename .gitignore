@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+downloads/**
+!downloads/.gitkeep
+*.mp4
+*.webm
+*.mkv
+*.m4a
+*.wav
+.whisper/
+models/*.zip
+
+models/vosk-model-*/
